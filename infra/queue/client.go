@@ -1,19 +1,25 @@
 package queue
 
 import (
+	"fmt"
+
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 type Client struct {
-	ClientID string
-	client   mqtt.Client
+	ClientID  string
+	ClientIP  string
+	PublicKey string
+	client    mqtt.Client
 }
 
 // NewClient creates a new MQTT client
 // broker: the MQTT broker URL
 // clientID: the client ID
 // returns a new MQTT client
-func NewClient(broker string, clientID string) (*Client, error) {
+func NewClient(broker string, clientID string, key string) (*Client, error) {
+	fmt.Println("Creating new client with broker: ", broker, " and client ID: ", clientID)
+
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(broker)
 	opts.SetClientID(clientID)
@@ -24,8 +30,10 @@ func NewClient(broker string, clientID string) (*Client, error) {
 	}
 
 	return &Client{
-		ClientID: clientID,
-		client:   client,
+		ClientID:  clientID,
+		ClientIP:  broker,
+		client:    client,
+		PublicKey: key,
 	}, nil
 }
 
@@ -34,6 +42,8 @@ func NewClient(broker string, clientID string) (*Client, error) {
 // messageHandler: the message handler
 // returns a boolean indicating if the subscription was successful and an error
 func (c Client) Consume(topics map[string]byte, messageHandler mqtt.MessageHandler) (bool, error) {
+	fmt.Println("Subscribing to topics: ", topics)
+
 	token := c.client.SubscribeMultiple(topics, messageHandler)
 	token.Wait()
 
@@ -51,6 +61,8 @@ func (c Client) Consume(topics map[string]byte, messageHandler mqtt.MessageHandl
 // retained: whether the message should be retained
 // returns a boolean indicating if the publication was successful and an error
 func (c Client) Publish(topic string, message string, qos byte, retained bool) (bool, error) {
+	fmt.Println("Publishing to topic: ", topic, " as ", c.ClientIP, " with message: ", message)
+
 	token := c.client.Publish(topic, qos, retained, message)
 	token.Wait()
 
@@ -63,6 +75,7 @@ func (c Client) Publish(topic string, message string, qos byte, retained bool) (
 
 // Disconnect disconnects the client
 // the 10 ms timeout is hardcoded
+// TODO: NOT USED
 func (c Client) Disconnect() {
 	c.client.Disconnect(10)
 }

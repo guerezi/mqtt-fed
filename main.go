@@ -4,19 +4,19 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	"mqtt-fed/application"
+	keys "mqtt-fed/infra/crypto"
 	"net/http"
 	"os"
-
-	"gopkg.in/yaml.v2"
 )
 
 func main() {
 	federatorConfig := getConfig()
 
-	fmt.Println("Federator", federatorConfig.Id, "started!")
-
 	application.Run(federatorConfig)
+	fmt.Println("Federator", federatorConfig.Id, "started!")
 
 	select {}
 }
@@ -25,12 +25,18 @@ func getConfig() application.FederatorConfig {
 	var federatorConfig application.FederatorConfig
 
 	if os.Getenv("TOPOLOGY_MANAGER_URL") != "" {
-		body, _ := json.Marshal(&application.JoinRequest{
-			Ip: os.Getenv("ADVERTISED_LISTENER"),
-		})
 
+		privateKey, publicKey := keys.GetKeys()
+
+		fmt.Println("Public Key: ", publicKey, " Private Key: ", privateKey)
+
+		body, _ := json.Marshal(&application.JoinRequest{
+			Ip:        os.Getenv("ADVERTISED_LISTENER"),
+			PublicKey: string(publicKey),
+		})
 		payload := bytes.NewBuffer(body)
 
+		fmt.Println("Joining the federated network with body: ", payload)
 		resp, err := http.Post(os.Getenv("TOPOLOGY_MANAGER_URL")+"/api/v1/join", "application/json", payload)
 
 		if err != nil {
@@ -49,17 +55,19 @@ func getConfig() application.FederatorConfig {
 			panic(response.Description)
 		}
 
-		federatorConfig, _ = response.Data.(application.FederatorConfig)
-	} else if os.Getenv("CONFIG_FILE") != "" {
-		data, err := os.ReadFile(os.Getenv("CONFIG_FILE"))
+		dataBytes, _ := json.Marshal(response.Data)
+
+		err = json.Unmarshal(dataBytes, &federatorConfig)
 		if err != nil {
 			panic(err)
 		}
 
-		err = yaml.Unmarshal(data, &federatorConfig)
-		if err != nil {
-			panic(err)
-		}
+		federatorConfig.CoreAnnInterval = time.Duration(federatorConfig.CoreAnnInterval)
+		federatorConfig.BeaconInterval = time.Duration(federatorConfig.BeaconInterval)
+		// TODO: Dont liek this, private Key is not part of the config
+		federatorConfig.PrivateKey = string(privateKey)
+
+		fmt.Println("Federator config: ", federatorConfig)
 	} else {
 		panic("No configuration provided")
 	}

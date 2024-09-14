@@ -19,6 +19,7 @@ type FederatorContext struct {
 	BeaconInterval  time.Duration
 	Redundancy      int
 	CacheSize       int
+	PrivateKey      string
 	Neighbors       map[int64]*paho.Client
 	HostClient      *paho.Client
 }
@@ -55,25 +56,22 @@ func (f *Federator) Run() {
 		// Get the federated topic
 		federatedTopic := msg.Topic
 
-		fmt.Print("Received message: ", msg, "\n")
-
 		if err == nil {
 			// Check if the message is a topology announcement
 			// and add or remove the neighbor from the neighbors
 			if msg.Type == "TopologyAnn" {
-				// TODO: HERE, CRIAR UM ESTADO INTERMEDIARIO ANTES DE REALMNENTE ENTRAR, CRIAR UM HANDSHAKE
+				fmt.Println("Topology ann received: ", msg.TopologyAnn.Neighbor.Id, " Action: ", msg.TopologyAnn.Action)
+
 				if msg.TopologyAnn.Action == "NEW" {
-					fmt.Println("Topology ann received, adding ", msg.TopologyAnn.Neighbor.Id, " to neighbors")
-					mqttClient, err := paho.NewClient(msg.TopologyAnn.Neighbor.Ip, f.Ctx.HostClient.ClientID)
+					mqttClient, err := paho.NewClient(msg.TopologyAnn.Neighbor.Ip, f.Ctx.HostClient.ClientID, msg.TopologyAnn.Neighbor.PublicKey)
 
 					if err == nil {
 						f.Ctx.Neighbors[msg.TopologyAnn.Neighbor.Id] = mqttClient
 					} else {
-						fmt.Println(err)
+						fmt.Println("Erro on adding neighbor:", err)
 					}
 
 				} else if msg.TopologyAnn.Action == "REMOVE" {
-					fmt.Println("Topology ann received, removing ", msg.TopologyAnn.Neighbor.Id, " from neighbors")
 					delete(f.Ctx.Neighbors, msg.TopologyAnn.Neighbor.Id)
 				}
 			} else {
@@ -87,6 +85,8 @@ func (f *Federator) Run() {
 					f.Workers[federatedTopic] = worker
 				}
 			}
+		} else {
+			fmt.Println("error on handle message: ", err)
 		}
 	}
 
@@ -105,7 +105,7 @@ func Run(federatorConfig FederatorConfig) {
 	// Create a client id
 	clientId := "federator_" + strconv.FormatInt(federatorConfig.Id, 10)
 
-	// Create neighbors clients
+	// Create neighbors clients (Usually starts empty and is updated by topology announcements)
 	neighborsClients := createNeighborsClients(federatorConfig.Neighbors, clientId)
 	// Create host client
 	hostClient := createHostClient(clientId)
@@ -116,6 +116,7 @@ func Run(federatorConfig FederatorConfig) {
 		CoreAnnInterval: federatorConfig.CoreAnnInterval,
 		BeaconInterval:  federatorConfig.BeaconInterval,
 		Redundancy:      federatorConfig.Redundancy,
+		PrivateKey:      federatorConfig.PrivateKey,
 		CacheSize:       1000,
 		Neighbors:       neighborsClients,
 		HostClient:      hostClient,
@@ -136,7 +137,7 @@ func createNeighborsClients(neighbors []NeighborConfig, clientId string) map[int
 	neighborsClients := make(map[int64]*paho.Client)
 
 	for _, neighbor := range neighbors {
-		mqttClient, err := paho.NewClient(neighbor.Ip, clientId)
+		mqttClient, err := paho.NewClient(neighbor.Ip, clientId, neighbor.PublicKey)
 
 		if err == nil {
 			neighborsClients[neighbor.Id] = mqttClient
@@ -152,13 +153,14 @@ func createNeighborsClients(neighbors []NeighborConfig, clientId string) map[int
 // createHostClient creates a host client for the federator
 // it connects to the local mosquitto broker
 func createHostClient(clientId string) *paho.Client {
+	fmt.Println("Creating host client as ", clientId)
 	mosquittoPort := os.Getenv("MOSQUITTO_PORT")
 
 	if mosquittoPort == "" {
 		mosquittoPort = "1883"
 	}
 
-	mqttClient, err := paho.NewClient("tcp://localhost:"+mosquittoPort, clientId)
+	mqttClient, err := paho.NewClient("tcp://localhost:"+mosquittoPort, clientId, "")
 
 	if err != nil {
 		panic(err)
@@ -166,3 +168,43 @@ func createHostClient(clientId string) *paho.Client {
 
 	return mqttClient
 }
+
+// mqtt sub -t federator/beacon/generic -h localhost -p 1883 (-d)
+// mqtt pub -t federator/beacon/generic -m "test message" -h localhost -p 1885 (-d)
+// mqtt pub -t federated/generic -m "test message" -h localhost -p 1885 (-d)
+
+// TODO: What is a parent, a child
+// TODO: understand the propagation of federated topics
+// TODO: understand the propagation of routing topics
+// TODO: Can I send a crypto messsage withouth decrypting on every node?
+
+// On/off de auth (talvez não precise sempre)
+// ON/off de topicos especificos
+
+// /luzes
+// /temp precisa
+
+// On/off da federação ou do broker
+
+// Não atirar a chave publica por aí
+// 2 niveis de sec
+// Nivel 1 MAC
+//     federated topic tem um item a mais, um hash extra
+//     Menti, MAC encapsula o dado
+//     MAC é uma flag extra na mensagem, (sem ser no payload ?)
+//     O Broker informa o tipo de segurança que ele tem
+
+// Não precisa ter critografia sempre =, mac pode resolveer,
+
+// Dado criptografado do federated até os sub locais
+//     dado armazenado criptografado
+
+//     diffie hellman  e mac
+//     No joinHandler
+//     Garantir que o broker que entra é um broker que pode escutar coisas
+//         Quem pode escutar, basta ter uma chave?? Não
+//         Achar um jeito de validar que o cara pode se inscrever em federated/coisa
+//     Ondefaço chaves?
+//     Duas chaves gabriel, uma complicada e uma simples
+
+//     Chave somente na entrada da fed do topico

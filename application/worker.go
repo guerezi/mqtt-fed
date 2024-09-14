@@ -32,6 +32,8 @@ func NewTopicWorkerHandle(federatedTopic string, ctx *FederatorContext) *TopicWo
 	worker := NewTopicWorker(federatedTopic, ctx, channel)
 	go worker.Run()
 
+	fmt.Println("New topic worker created for ", federatedTopic, " , Channel: ", channel)
+
 	// Return the topic worker handle
 	return &TopicWorkerHandle{
 		FederatedTopic: federatedTopic,
@@ -91,6 +93,8 @@ func (t TopicWorker) Run() {
 
 // handleRoutedPub handles a routed publication
 func (t *TopicWorker) handleRoutedPub(routedPub RoutedPub) {
+	fmt.Println("Routed Pub ", t.Topic, " received: ", string(routedPub.Payload))
+
 	// Check if the cache contains the publication ID
 	if t.Cache.Contains(routedPub.PubId) {
 		return
@@ -100,8 +104,9 @@ func (t *TopicWorker) handleRoutedPub(routedPub RoutedPub) {
 	t.Cache.Add(routedPub.PubId, true)
 
 	// Check if the topic worker has local subscribers
+	// and send the publication to the local subscribers (sensors and stuff)
 	if t.hasLocalSub() {
-		fmt.Println("sending pub to local subs")
+		fmt.Println("sending pub to local subs ", t.Topic)
 
 		_, err := t.Ctx.HostClient.Publish(t.Topic, string(routedPub.Payload), 2, false)
 
@@ -117,19 +122,17 @@ func (t *TopicWorker) handleRoutedPub(routedPub RoutedPub) {
 
 	// send to mesh parents
 	var parents []int64
-
 	for _, parent := range t.CurrentCore.Other.Parents {
 		if senderId != parent.Id {
 			parents = append(parents, parent.Id)
 		}
 	}
 
-	// send to mesh parents
+	fmt.Println("Routed Pub Sending to parents: ", parents)
 	SendTo(topic, replieRoutedPub, parents, t.Ctx.Neighbors)
 
 	// send to mesh children
 	var children []int64
-
 	for id, child := range t.Children {
 		elapsed := time.Since(child)
 
@@ -138,7 +141,7 @@ func (t *TopicWorker) handleRoutedPub(routedPub RoutedPub) {
 		}
 	}
 
-	// send to mesh children
+	fmt.Println("Routed Pub Sending to children: ", children)
 	SendTo(topic, replieRoutedPub, children, t.Ctx.Neighbors)
 }
 
@@ -146,6 +149,10 @@ func (t *TopicWorker) handleRoutedPub(routedPub RoutedPub) {
 // it creates a new publication ID and sends the publication
 // to the mesh parents and children
 func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
+	fmt.Println("Federted Pub ", t.Topic, " received: ", string(msg.Payload))
+
+	// TODO: SEND TO LOCAL SUBSCRIBERS
+
 	newId := PubId{
 		OriginId: t.Ctx.Id,
 		Seqn:     t.NextId,
@@ -169,11 +176,12 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 		parents = append(parents, parent.Id)
 	}
 
+	// TODO: HERE I.E. TO SEND TO THE PARENTS, I NEED TO CRYPTOGRAPHICALLY SIGN THE MESSAGE
+	fmt.Println("Federted Pub Sending to parents: ", parents)
 	SendTo(topic, routedPub, parents, t.Ctx.Neighbors)
 
 	// send to mesh children
 	var children []int64
-
 	for id, child := range t.Children {
 		elapsed := time.Since(child)
 
@@ -182,6 +190,7 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 		}
 	}
 
+	fmt.Println("Federted Pub Sending to children: ", children)
 	SendTo(topic, routedPub, children, t.Ctx.Neighbors)
 }
 
@@ -196,10 +205,13 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 		return
 	}
 
+	fmt.Println("Core Ann ", t.Topic, " received: ", coreAnn)
+
 	coreAnn.Dist += 1
 
-	// check if the core ann is from a core with a lower id
+	// filter the core information and get the valid core
 	core := FilterValid(t.CurrentCore, t.Ctx.CoreAnnInterval)
+	fmt.Println("Core: ", core)
 
 	if core != nil {
 		currentCoreId := t.Ctx.Id
@@ -227,6 +239,7 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 				}
 
 				t.CurrentCore.Other.Parents = t.CurrentCore.Other.Parents[:0]
+				fmt.Println("Adding parent ", coreAnn.SenderId, " to ", t.Ctx.Id)
 				t.CurrentCore.Other.Parents = append(t.CurrentCore.Other.Parents, Parent{
 					Id:          coreAnn.SenderId,
 					WasAnswered: wasAnswered,
@@ -252,9 +265,8 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 				if !isParent {
 					// check if the redundancy permits
 					if len(core.Parents) <= t.Ctx.Redundancy {
-						// check if the neighbor has a lower id
+						// check if the neighbor has local subscribers
 						if len(core.Parents) == t.Ctx.Redundancy {
-							// pop parent with larger id to open room for new parent
 							t.CurrentCore.Other.Parents = t.CurrentCore.Other.Parents[:len(t.CurrentCore.Other.Parents)-1]
 						}
 
@@ -272,6 +284,8 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 							WasAnswered: wasAnswered,
 						}
 
+						fmt.Println("Adding parent ", parent.Id, " to ", t.Ctx.Id)
+
 						t.CurrentCore.Other.Parents = append(t.CurrentCore.Other.Parents, parent)
 						t.CurrentCore.Other.HasUnansweredParents = !wasAnswered
 					}
@@ -279,8 +293,8 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 			}
 			// received a core ann from a core with a higher id: depose the current core
 		} else if coreAnn.CoreId < currentCoreId {
-			fmt.Println(currentCoreId, " Core deposed")
-			fmt.Println(coreAnn.CoreId, " New core elected")
+			fmt.Println(currentCoreId, " Core deposed", coreAnn.CoreId, " New core elected")
+			fmt.Println("Children on : ", t.Children, "will be empty")
 
 			t.Children = make(map[int64]time.Time)
 
@@ -318,8 +332,7 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 		}
 		// received a core ann from a core with a higher id: depose the current core
 	} else {
-		fmt.Println(coreAnn.CoreId, " new core elected")
-
+		fmt.Println("Children: ", t.Children, "will be empty")
 		t.Children = make(map[int64]time.Time)
 
 		wasAnswered := false
@@ -348,13 +361,16 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 
 		t.CurrentCore = newCore
 
+		fmt.Println(coreAnn.CoreId, " new core elected", newCore)
+
 		t.forward(coreAnn)
 	}
-
 }
 
 // handleMembAnn handles a mesh membership announcement
 func (t *TopicWorker) handleMembAnn(membAnn MeshMembAnn) {
+	fmt.Println("Memb Ann ", t.Topic, " received: ", membAnn)
+
 	// if the memb ann is from the current core or from the sender, ignore it
 	if membAnn.CoreId == t.Ctx.Id || membAnn.SenderId == t.Ctx.Id {
 		return
@@ -362,6 +378,7 @@ func (t *TopicWorker) handleMembAnn(membAnn MeshMembAnn) {
 
 	// if the memb ann seqn is the same as the latest seqn, answer the parents
 	if membAnn.Seqn == t.CurrentCore.Other.LatestSeqn {
+		fmt.Println("Adding child ", membAnn.SenderId, " to ", t.Ctx.Id)
 		t.Children[membAnn.SenderId] = time.Now()
 		answerParents(&t.CurrentCore.Other, t.Ctx, t.Topic)
 	}
@@ -376,11 +393,14 @@ func (t *TopicWorker) handleBeacon() {
 	core := FilterValid(t.CurrentCore, t.Ctx.CoreAnnInterval)
 
 	if core != nil {
-		// if the current core is a broker, answer the parents
+		fmt.Println("Has Beancon for ", t.Topic)
+
+		// if the current core is a core broker, answer the parents
 		if c, ok := core.(CoreBroker); ok {
 			answerParents(&c, t.Ctx, t.Topic)
 		}
 	} else {
+		fmt.Println("Broker has no local subscribers, Creating an announcer")
 		// if the current core is an announcer, create a new core
 		announcer := NewAnnouncer(t.Topic, t.Ctx)
 
@@ -388,11 +408,15 @@ func (t *TopicWorker) handleBeacon() {
 			Myself: *announcer,
 		}
 
+		fmt.Println("Children on beacon: ", t.Children, "will be empty")
 		t.Children = make(map[int64]time.Time)
 	}
 }
 
 // hasLocalSub checks if the topic worker has local subscribers
+// by checking if the latest beacon time is not zero and if the
+// elapsed time is less than 3 times the beacon interval
+// LocalSubscribers are subscribers that are in the same broker as the topic worker
 func (t TopicWorker) hasLocalSub() bool {
 	// check if the latest beacon time is not zero
 	// and if the elapsed time is less than 3 times
@@ -418,6 +442,7 @@ func (t TopicWorker) forward(coreAnn CoreAnn) {
 
 	for id, ngbrClient := range t.Ctx.Neighbors {
 		if id != coreAnn.SenderId {
+			fmt.Println("Forwarding core ann to ", id, " On topic ", topic)
 			_, err := ngbrClient.Publish(topic, string(myCoreAnn), 2, false)
 			if err != nil {
 				fmt.Println("Error while forward message to ", ngbrClient.ClientID)
@@ -442,7 +467,6 @@ func hasLocalSub(latestBeacon time.Time, ctx *FederatorContext) bool {
 func NewTopicWorker(federatedTopic string, ctx *FederatorContext, channel chan Message) *TopicWorker {
 
 	cache, _ := lru.New(ctx.CacheSize)
-
 	return &TopicWorker{
 		Topic:    federatedTopic,
 		Ctx:      ctx,
@@ -455,6 +479,10 @@ func NewTopicWorker(federatedTopic string, ctx *FederatorContext, channel chan M
 
 // FilterValid filters the core information and returns the valid core
 func FilterValid(core Core, coreAnnInterval time.Duration) interface{} {
+	// deepequal is used to compare the core information
+	// if the core information is not empty, check if the
+	// other core is not empty and if the elapsed time is
+	// less than 3 times the core announcement interval
 	if !reflect.DeepEqual(core.Other, CoreBroker{}) {
 		elapsed := time.Since(core.Other.LastHeard)
 
@@ -469,12 +497,13 @@ func FilterValid(core Core, coreAnnInterval time.Duration) interface{} {
 }
 
 // SendTo sends a message to the mesh neighbors
+// TODO: HERE (?) I NEED TO CRYPTOGRAPHICALLY SIGN THE MESSAGE
 func SendTo(topic string, message []byte, ids []int64, neighbors map[int64]*paho.Client) {
-
 	if len(ids) <= 0 {
 		return
 	}
 
+	// The first is the core broker
 	firstId := ids[0]
 
 	// remove the first id from the list because it will be sent separately latter
@@ -483,7 +512,10 @@ func SendTo(topic string, message []byte, ids []int64, neighbors map[int64]*paho
 	for _, id := range ids {
 
 		if neighbors[id] != nil {
+			fmt.Println("Sending:", topic, "With message:", string(message), "to ", id)
+
 			_, err := neighbors[id].Publish(topic, string(message), 2, false)
+			// _, err := neighbors[id].Publish(topic, keys.Encrypt([]byte(neighbors[id].PublicKey), string(message)), 2, false)
 			if err != nil {
 				fmt.Println("problem creating or queuing the message for broker id ", id)
 			}
@@ -494,18 +526,23 @@ func SendTo(topic string, message []byte, ids []int64, neighbors map[int64]*paho
 
 	// send to the first id if it is a neighbor
 	if neighbors[firstId] != nil {
+		fmt.Println("Sending:", topic, "With message:", string(message), "to ", firstId)
+
 		_, err := neighbors[firstId].Publish(topic, string(message), 2, false)
+		// _, err := neighbors[firstId].Publish(topic, keys.Encrypt([]byte(neighbors[firstId].PublicKey), string(message)), 2, false)
+
 		if err != nil {
 			fmt.Println("problem creating or queuing the message for broker id ", firstId)
 		}
 	} else {
 		fmt.Println("broker", firstId, "is not a neighbor")
 	}
-
 }
 
-// answerParents answers the parents of a core broker with the latest sequence number
+// Answers the parents of a core broker with the latest sequence number
 func answerParents(core *CoreBroker, context *FederatorContext, topic string) {
+	fmt.Println("Answering parents of ", core.Id, " On topic ", topic)
+
 	if core.HasUnansweredParents {
 		pub := MeshMembAnn{
 			CoreId:   core.Id,
@@ -519,6 +556,7 @@ func answerParents(core *CoreBroker, context *FederatorContext, topic string) {
 		for _, parent := range core.Parents {
 			if !parent.WasAnswered {
 				if context.Neighbors[parent.Id] != nil {
+					fmt.Println("Sending my memb ann PARENTS to ", parent.Id, " On topic ", topic)
 					_, err := context.Neighbors[parent.Id].Publish(topic, string(myMembAnn), 2, false)
 					if err != nil {
 						fmt.Println("error while send my memb ann")
@@ -535,6 +573,8 @@ func answerParents(core *CoreBroker, context *FederatorContext, topic string) {
 }
 
 func answer(coreAnn CoreAnn, topic string, context *FederatorContext) {
+	fmt.Println("Answering core ann from ", coreAnn.SenderId, " On topic ", topic)
+
 	pub := MeshMembAnn{
 		CoreId:   coreAnn.CoreId,
 		Seqn:     coreAnn.Seqn,
@@ -546,7 +586,7 @@ func answer(coreAnn CoreAnn, topic string, context *FederatorContext) {
 
 	// send the mesh membership announcement to the sender
 	if context.Neighbors[coreAnn.SenderId] != nil {
-		// send the mesh membership announcement to the sender
+		fmt.Println("Sending my memb ann to ", coreAnn.SenderId, " On topic ", topic)
 		_, err := context.Neighbors[coreAnn.SenderId].Publish(topic, string(myMembAnn), 2, false)
 		if err != nil {
 			fmt.Println("error while send my memb ann to ", coreAnn.SenderId)
