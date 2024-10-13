@@ -1,75 +1,109 @@
+// TODO:  Diffie hellman mas com curva eliptica
+// Preciso de uns numeros no env pra todos terem uma whitelist
+// e validar se o calculo deu o numero certo mesmo
+
+// Chave de sessão ?? compartilhada no topico
+// SENHA COMPARTILHADA DENTRO DO TOPICO
+// QUE MUDA SE SAIR/ENTRAR GENTE
+
+// SENHA PARA O TOPICO
+// VER QUANDO SAI ENTÃO DO TOPICO
+
 package crypto
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
+	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
+	"io"
 )
 
-// getKey generates a private and public key pair
-func GetKeys() ([]byte, []byte) {
-	// Generate RSA keys using 2048 bits key size
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+// GenerateECDHKeyPair generates a private-public key pair using elliptic curves
+func GenerateECDHKeyPair() (*ecdsa.PrivateKey, *ecdsa.PublicKey, error) {
+	// Using the P256 elliptic curve
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
 
-	// Extract the public key from the private key
-	publicKey := &privateKey.PublicKey
+	// The public key can be derived from the private key
+	pubKey := &privKey.PublicKey
 
-	// Save the keys to files
-	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: privateKeyBytes,
-	})
-
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(publicKey)
-	if err != nil {
-		panic(err)
-	}
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PUBLIC KEY",
-		Bytes: publicKeyBytes,
-	})
-
-	return privateKeyPEM, publicKeyPEM
+	return privKey, pubKey, nil
 }
 
-// Encrypt encrypts a message using the public key provided as PEM
-// Can be changed to use the public key directly from a file
-func Encrypt(publicKeyPEM []byte, message string) string {
-	publicKeyBlock, _ := pem.Decode(publicKeyPEM)
-	publicKey, err := x509.ParsePKIXPublicKey(publicKeyBlock.Bytes)
-	if err != nil {
-		panic(err)
-	}
+// GenerateSharedSecret generates the shared secret using ECDH
+func GenerateSharedSecret(privateKey *ecdsa.PrivateKey, otherPublicKey *ecdsa.PublicKey) ([]byte, error) {
+	fmt.Println("Private Key: ", privateKey.Curve)
 
-	plaintext := []byte(message)
-	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey.(*rsa.PublicKey), plaintext)
-	if err != nil {
-		panic(err)
-	}
+	// Use the elliptic curve scalar multiplication to generate the shared secret
+	x, _ := privateKey.Curve.ScalarMult(otherPublicKey.X, otherPublicKey.Y, privateKey.D.Bytes())
 
-	fmt.Println("Encrypted:", string(ciphertext))
-	return string(ciphertext)
+	// Hash the x coordinate (shared secret) to get a fixed-length key for encryption (AES, etc.)
+	hash := sha256.New()
+	hash.Write(x.Bytes())
+	sharedSecret := hash.Sum(nil)
+
+	return sharedSecret, nil
 }
 
-// Decrypt decrypts a message using the private key provided as PEM
-func Decrypt(privateKeyPEM []byte, ciphertext []byte) string {
-	privateKeyBlock, _ := pem.Decode(privateKeyPEM)
-	privateKey, err := x509.ParsePKCS1PrivateKey(privateKeyBlock.Bytes)
+// CheckKeys ensures that the shared secrets match
+func CheckKeys(sharedSecret, neighborSharedSecret []byte) bool {
+	return subtle.ConstantTimeCompare(sharedSecret, neighborSharedSecret) == 1
+}
+
+// Encrypt encrypts a message using the shared secret key provided
+func Encrypt(plaintext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	plaintext, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, ciphertext)
+	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	fmt.Println("Decrypted:", string(plaintext))
-	return string(plaintext)
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	fmt.Println("Encrypted message: ", string(ciphertext))
+
+	return ciphertext, nil
+}
+
+// Decrypt decrypts a message using the private key provided
+func Decrypt(ciphertext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Println("Decrypted message: ", string(plaintext))
+
+	return plaintext, nil
 }
