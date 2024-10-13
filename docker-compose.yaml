@@ -1,0 +1,70 @@
+version: "3.5"
+
+services:
+  mqtt-fed-0:
+    image: brunobevilaquaa/mqtt-fed
+    container_name: mqtt-fed-0
+    ports:
+      - '1880:1883'
+    build:
+      context: .
+    environment:
+      - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
+      - ADVERTISED_LISTENER=tcp://mqtt-fed-0:1883
+
+  mqtt-fed-1:
+    image: brunobevilaquaa/mqtt-fed
+    container_name: mqtt-fed-1
+    depends_on:
+      - mqtt-fed-0
+    ports:
+      - '1881:1883'
+    build:
+      context: .
+    environment:
+      - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
+      - ADVERTISED_LISTENER=tcp://mqtt-fed-1:1883
+
+  # mqtt-fed-2:
+  #   image: brunobevilaquaa/mqtt-fed
+  #   container_name: mqtt-fed-2
+  #   depends_on:
+  #     - mqtt-fed-1
+  #   ports:
+  #     - '1882:1883'
+  #   build:
+  #     context: .
+  #   environment:
+  #     - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
+  #     - ADVERTISED_LISTENER=tcp://mqtt-fed-2:1883
+
+  # mqtt-fed-3:
+  #   image: brunobevilaquaa/mqtt-fed
+  #   container_name: mqtt-fed-3
+  #   depends_on:
+  #     - mqtt-fed-2
+  #   ports:
+  #     - '1883:1883'
+  #   build:
+  #     context: .
+  #   environment:
+  #     - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
+  #     - ADVERTISED_LISTENER=tcp://mqtt-fed-3:1883
+
+  # mqtt-fed-4:
+  #   image: brunobevilaquaa/mqtt-fed
+  #   container_name: mqtt-fed-4
+  #   depends_on:
+  #     - mqtt-fed-3
+  #   ports:
+  #     - '1884:1883'
+  #   build:
+  #     context: .
+  #   environment:
+  #     - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
+  #     - ADVERTISED_LISTENER=tcp://mqtt-fed-4:1883
+
+networks:
+  default:
+    name: federation
+    # external: true
