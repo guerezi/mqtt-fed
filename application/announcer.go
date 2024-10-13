@@ -15,7 +15,6 @@ type Announcer struct {
 // Drop stops the Announcer
 // from sending core announcements
 // to the federated network
-// TODO: UNUSED
 func (a Announcer) Drop() {
 	a.stop <- true
 	fmt.Println("Stop announcing as core")
@@ -50,7 +49,6 @@ func NewAnnouncer(federatedTopic string, ctx *FederatorContext) *Announcer {
 					topic, coreAnn := ann.Serialize(federatedTopic)
 
 					// Publish the core announcement
-					// TODO: ENCRYPT USING CORE PUBLIC KEY ? (NOT IMPLEMENTED)
 					fmt.Println("Sending core announcement to neighbor: ", neighbor.ClientIP, " On Topic: ", topic, " With CoreAnn: ", string(coreAnn))
 					_, err := neighbor.Publish(topic, string(coreAnn), 2, true)
 					if err != nil {

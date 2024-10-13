@@ -2,8 +2,10 @@ package application
 
 import (
 	"fmt"
+	keys "mqtt-fed/infra/crypto"
 	paho "mqtt-fed/infra/queue"
 	"reflect"
+	"strings"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru"
@@ -31,8 +33,6 @@ func NewTopicWorkerHandle(federatedTopic string, ctx *FederatorContext) *TopicWo
 	// Create a new topic worker
 	worker := NewTopicWorker(federatedTopic, ctx, channel)
 	go worker.Run()
-
-	fmt.Println("New topic worker created for ", federatedTopic, " , Channel: ", channel)
 
 	// Return the topic worker handle
 	return &TopicWorkerHandle{
@@ -69,6 +69,7 @@ type TopicWorker struct {
 	LatestBeacon time.Time
 	CurrentCore  Core
 	Children     map[int64]time.Time
+	SessionKey   []byte
 }
 
 // Run starts the topic worker
@@ -77,18 +78,27 @@ type TopicWorker struct {
 func (t TopicWorker) Run() {
 	// Consume messages from the federated network
 	for msg := range t.Channel {
-		if msg.Type == "RoutedPub" {
+		if msg.Type == "SecureRoutedPub" {
+			t.handleSecureRoutedPub(msg.SecureRoutedPub)
+		} else if msg.Type == "RoutedPub" {
 			t.handleRoutedPub(msg.RoutedPub)
+		} else if msg.Type == "SecureFederatedPub" {
+			t.handleSecureFederatedPub(msg.SecureFederatedPub)
 		} else if msg.Type == "FederatedPub" {
 			t.handleFederatedPub(msg.FederatedPub)
 		} else if msg.Type == "CoreAnn" {
 			t.handleCoreAnn(msg.CoreAnn)
+		} else if msg.Type == "MeshMembAck" {
+			t.handleMembAck(msg.MeshMembAck)
 		} else if msg.Type == "MeshMembAnn" {
 			t.handleMembAnn(msg.MeshMembAnn)
+		} else if msg.Type == "SecureBeacon" {
+			t.handleSecureBeacon()
 		} else if msg.Type == "Beacon" {
 			t.handleBeacon()
 		}
 	}
+
 }
 
 // handleRoutedPub handles a routed publication
@@ -145,13 +155,79 @@ func (t *TopicWorker) handleRoutedPub(routedPub RoutedPub) {
 	SendTo(topic, replieRoutedPub, children, t.Ctx.Neighbors)
 }
 
+// TODO: DOCUMENTATION
+func (t *TopicWorker) handleSecureRoutedPub(secureRoutedPub SecureRoutedPub) {
+	fmt.Println("Secure Routed Pub ", t.Topic, " received: ", string(secureRoutedPub.Payload))
+
+	// Check if the cache contains the publication ID
+	if t.Cache.Contains(secureRoutedPub.PubId) {
+		return
+	}
+
+	// Add the publication ID to the cache
+	t.Cache.Add(secureRoutedPub.PubId, true)
+
+	// Check if the topic worker has local subscribers
+	// and send the publication to the local subscribers (sensors and stuff)
+	if t.hasLocalSub() {
+		payload, er := keys.DecryptSimple(secureRoutedPub.Payload, t.SessionKey)
+
+		if er != nil {
+			fmt.Println("Error while decrypting the payload", er)
+		} else {
+			fmt.Println("Payload decrypted successfully", string(payload))
+		}
+
+		if !keys.ValidateMAC(t.SessionKey, payload, secureRoutedPub.Mac) {
+			fmt.Println("Message was tampered")
+			return
+		}
+
+		fmt.Println("sending pub to local subs ", t.Topic)
+
+		_, err := t.Ctx.HostClient.Publish(t.Topic, string(payload), 2, false)
+
+		if err != nil {
+			fmt.Println("Error while send to local subscribers ", err)
+		}
+	}
+
+	senderId := secureRoutedPub.SenderId
+	secureRoutedPub.SenderId = t.Ctx.Id
+
+	topic, replieRoutedPub := secureRoutedPub.Serialize(t.Topic)
+
+	var parents, children []int64
+
+	// send to mesh parents
+	for _, parent := range t.CurrentCore.Other.Parents {
+		if senderId != parent.Id {
+			parents = append(parents, parent.Id)
+		}
+	}
+
+	fmt.Println("Secure Routed Pub Sending to parents: ", parents)
+	SendTo(topic, replieRoutedPub, parents, t.Ctx.Neighbors)
+
+	// send to mesh children
+	for id, child := range t.Children {
+		elapsed := time.Since(child)
+
+		if id != senderId && elapsed < 3*t.Ctx.CoreAnnInterval {
+			children = append(children, id)
+		}
+	}
+
+	fmt.Println("Secure Routed Pub Sending to children: ", children)
+	SendTo(topic, replieRoutedPub, children, t.Ctx.Neighbors)
+
+}
+
 // handleFederatedPub handles a federated publication
 // it creates a new publication ID and sends the publication
 // to the mesh parents and children
 func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 	fmt.Println("Federted Pub ", t.Topic, " received: ", string(msg.Payload))
-
-	// TODO: SEND TO LOCAL SUBSCRIBERS
 
 	newId := PubId{
 		OriginId: t.Ctx.Id,
@@ -176,7 +252,6 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 		parents = append(parents, parent.Id)
 	}
 
-	// TODO: HERE I.E. TO SEND TO THE PARENTS, I NEED TO CRYPTOGRAPHICALLY SIGN THE MESSAGE
 	fmt.Println("Federted Pub Sending to parents: ", parents)
 	SendTo(topic, routedPub, parents, t.Ctx.Neighbors)
 
@@ -192,6 +267,63 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 
 	fmt.Println("Federted Pub Sending to children: ", children)
 	SendTo(topic, routedPub, children, t.Ctx.Neighbors)
+}
+
+// TODO: DOCUMENTATION
+func (t *TopicWorker) handleSecureFederatedPub(msg SecureFederatedPub) {
+	fmt.Println("Secure Federted Pub ", t.Topic, " received: ", msg.Payload)
+
+	// TODO: ENCRYPT THE PAYLOAD WITH SESSION KEY
+	payload, err := keys.EncryptSimple(msg.Payload, t.SessionKey)
+	mac := keys.GenerateMAC(payload, t.SessionKey)
+
+	if err != nil {
+		fmt.Println("Error while encrypting the payload", err)
+	} else {
+		fmt.Println("Payload encrypted successfully", payload)
+	}
+
+	newId := PubId{
+		OriginId: t.Ctx.Id,
+		Seqn:     t.NextId,
+	}
+
+	t.NextId += 1
+
+	pub := SecureRoutedPub{
+		PubId:    newId,
+		Payload:  payload,
+		SenderId: t.Ctx.Id,
+		Mac:      mac,
+	}
+
+	fmt.Println("Secure Federted Pub: ", pub)
+
+	topic, secureRoutedPub := pub.Serialize(t.Topic)
+	fmt.Println("Secure Federted Pub after: ", string(secureRoutedPub))
+
+	t.Cache.Add(newId, true)
+	var parents, children []int64
+
+	// send to mesh parents
+	for _, parent := range t.CurrentCore.Other.Parents {
+		parents = append(parents, parent.Id)
+	}
+
+	fmt.Println("Secure Federted Pub Sending to parents: ", parents)
+	SendTo(topic, secureRoutedPub, parents, t.Ctx.Neighbors)
+
+	// send to mesh children
+	for id, child := range t.Children {
+		elapsed := time.Since(child)
+
+		if elapsed < 3*t.Ctx.CoreAnnInterval {
+			children = append(children, id)
+		}
+	}
+
+	fmt.Println("Federted Pub Sending to children: ", children)
+	SendTo(topic, secureRoutedPub, children, t.Ctx.Neighbors)
 }
 
 // handleCoreAnn handles a core announcement
@@ -381,7 +513,63 @@ func (t *TopicWorker) handleMembAnn(membAnn MeshMembAnn) {
 		fmt.Println("Adding child ", membAnn.SenderId, " to ", t.Ctx.Id)
 		t.Children[membAnn.SenderId] = time.Now()
 		answerParents(&t.CurrentCore.Other, t.Ctx, t.Topic)
+
+		if t.Ctx.Neighbors[membAnn.SenderId] != nil {
+			fmt.Println("Sending my memb ack using key ", t.SessionKey)
+			if t.SessionKey == nil {
+				fmt.Println("Creating a session key for ", t.Topic)
+
+				key := keys.GenerateSessionKey(t.Topic)
+				t.SessionKey = []byte(key)
+			}
+
+			pub := MeshMembAck{
+				CoreId:     t.CurrentCore.Other.Id,
+				Seqn:       t.CurrentCore.Other.LatestSeqn,
+				SenderId:   t.Ctx.Id,
+				SessionKey: t.SessionKey,
+			}
+
+			// TODO: Gets a public key from the sender and generate a shared key
+			// public, _ := keys.ConvertBytesToECDSAPublicKey(t.Ctx.PrivateKey, membAnn.PublicKey)
+			// shared, _ := keys.GenerateSharedSecret(t.Ctx.PrivateKey, public)
+
+			// serialize the mesh ack announcement
+			topic, myMembAck := pub.Serialize(t.Topic)
+
+			if t.Ctx.Neighbors[membAnn.SenderId] != nil {
+				fmt.Println("Sending my memb ack CHILD to ", membAnn.SenderId, " On topic ", topic)
+				_, err := t.Ctx.Neighbors[membAnn.SenderId].Publish(topic, string(myMembAck), 2, false)
+
+				// SendTo(t.Topic, []byte("Hello from "+t.Topic), []int64{membAnn.SenderId}, t.Ctx.Neighbors)
+
+				if err != nil {
+					fmt.Println("error while send my memb ack")
+				}
+			}
+		}
 	}
+}
+
+func (t *TopicWorker) handleMembAck(membAck MeshMembAck) {
+	if membAck.SenderId == t.Ctx.Id || membAck.CoreId == t.Ctx.Id {
+		return
+	}
+
+	// TODO: REMOVE, SHARED KEY SHOULD NOT BE SENT, ONLY FOR DEBUGGING
+	// PLACEHOLDER FOR EXCAHNGING PUBLIC KEYS AND GENERATING SHARED KEY
+
+	// public, _ := keys.ConvertBytesToECDSAPublicKey(t.Ctx.PrivateKey, membAck.PublicKey)
+	// shared, _ := keys.GenerateSharedSecret(t.Ctx.PrivateKey, public)
+
+	if reflect.DeepEqual(t.SessionKey, membAck.SessionKey) {
+		fmt.Println("Shared key matched")
+	} else {
+		fmt.Println("Shared key did not match")
+	}
+
+	fmt.Println("Memb Ack ", t.Topic, " received: ", membAck)
+
 }
 
 // handleBeacon handles a beacon message and
@@ -391,6 +579,15 @@ func (t *TopicWorker) handleBeacon() {
 
 	// check if the current core has local subscribers
 	core := FilterValid(t.CurrentCore, t.Ctx.CoreAnnInterval)
+
+	// TODO: Here just for testing, should be removed and used the member ack flow
+	fmt.Println("Sending my memb ann using key ", t.SessionKey)
+	if t.SessionKey == nil {
+		fmt.Println("Creating a session key on beacon for ", t.Topic)
+
+		key := keys.GenerateSessionKey(t.Topic)
+		t.SessionKey = []byte(key)
+	}
 
 	if core != nil {
 		fmt.Println("Has Beancon for ", t.Topic)
@@ -411,6 +608,13 @@ func (t *TopicWorker) handleBeacon() {
 		fmt.Println("Children on beacon: ", t.Children, "will be empty")
 		t.Children = make(map[int64]time.Time)
 	}
+}
+
+// TODO: DOCUMENTATION
+// Not needed for now
+func (t *TopicWorker) handleSecureBeacon() {
+	fmt.Println("Secure Beacon ", t.Topic, " received")
+	t.handleBeacon()
 }
 
 // hasLocalSub checks if the topic worker has local subscribers
@@ -442,10 +646,10 @@ func (t TopicWorker) forward(coreAnn CoreAnn) {
 
 	for id, ngbrClient := range t.Ctx.Neighbors {
 		if id != coreAnn.SenderId {
-			fmt.Println("Forwarding core ann to ", id, " On topic ", topic)
+			fmt.Println("Forwarding core ann to", id, "On topic", topic)
 			_, err := ngbrClient.Publish(topic, string(myCoreAnn), 2, false)
 			if err != nil {
-				fmt.Println("Error while forward message to ", ngbrClient.ClientID)
+				fmt.Println("Error while forward message to", ngbrClient.ClientID)
 			}
 		}
 	}
@@ -550,6 +754,13 @@ func answerParents(core *CoreBroker, context *FederatorContext, topic string) {
 			SenderId: context.Id,
 		}
 
+		// TODO: SHOULD I SEND THE PUBLIC KEY HERE?
+		// MEMBERANN Sends the public key to the parents (to create a shared key in memb ack)
+		if strings.HasPrefix(topic, SECURE_BEACON_TOPIC_LEVEL) {
+			fmt.Println("Answering parents with secure beacon")
+			pub.PublicKey = context.PublicKey
+		}
+
 		// serialize the mesh membership announcement
 		topic, myMembAnn := pub.Serialize(topic)
 
@@ -572,13 +783,21 @@ func answerParents(core *CoreBroker, context *FederatorContext, topic string) {
 	}
 }
 
+// Answers a core announcement with a mesh membership announcement
 func answer(coreAnn CoreAnn, topic string, context *FederatorContext) {
-	fmt.Println("Answering core ann from ", coreAnn.SenderId, " On topic ", topic)
+	fmt.Println("Answering core ann from", coreAnn.SenderId, "as", context.Id, "On topic", topic)
 
 	pub := MeshMembAnn{
 		CoreId:   coreAnn.CoreId,
 		Seqn:     coreAnn.Seqn,
 		SenderId: context.Id,
+	}
+
+	// TODO: SHOULD I SEND THE PUBLIC KEY HERE?
+	// MEMBERANN Sends the public key to the parents (to create a shared key in memb ack)
+	if strings.HasPrefix(topic, SECURE_BEACON_TOPIC_LEVEL) {
+		fmt.Println("Answering parents with secure beacon")
+		pub.PublicKey = context.PublicKey
 	}
 
 	// serialize the mesh membership announcement

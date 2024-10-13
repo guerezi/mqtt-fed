@@ -7,17 +7,16 @@ import (
 )
 
 type Client struct {
-	ClientID  string
-	ClientIP  string
-	PublicKey string
-	client    mqtt.Client
+	ClientID string
+	ClientIP string
+	client   mqtt.Client
 }
 
 // NewClient creates a new MQTT client
 // broker: the MQTT broker URL
 // clientID: the client ID
 // returns a new MQTT client
-func NewClient(broker string, clientID string, key string) (*Client, error) {
+func NewClient(broker string, clientID string) (*Client, error) {
 	fmt.Println("Creating new client with broker: ", broker, " and client ID: ", clientID)
 
 	opts := mqtt.NewClientOptions()
@@ -30,10 +29,9 @@ func NewClient(broker string, clientID string, key string) (*Client, error) {
 	}
 
 	return &Client{
-		ClientID:  clientID,
-		ClientIP:  broker,
-		client:    client,
-		PublicKey: key,
+		ClientID: clientID,
+		ClientIP: broker,
+		client:   client,
 	}, nil
 }
 

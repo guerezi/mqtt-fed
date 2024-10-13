@@ -1,11 +1,14 @@
 package application
 
 import (
+	"crypto/ecdsa"
 	"fmt"
 	paho "mqtt-fed/infra/queue"
 	"os"
 	"strconv"
 	"time"
+
+	keys "mqtt-fed/infra/crypto"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
@@ -18,10 +21,12 @@ type FederatorContext struct {
 	CoreAnnInterval time.Duration
 	BeaconInterval  time.Duration
 	Redundancy      int
-	CacheSize       int
-	PrivateKey      string
 	Neighbors       map[int64]*paho.Client
 	HostClient      *paho.Client
+	CacheSize       int
+	PrivateKey      *ecdsa.PrivateKey // my private key (can be stored as ecdsa.PrivateKey cuz will not be shared)
+	PublicKey       []byte            // my public key
+	SharedKey       []byte            // shared key with the topology manager
 }
 
 // Federator is a struct that
@@ -40,18 +45,22 @@ type Federator struct {
 // federated network
 func (f *Federator) Run() {
 	topics := map[string]byte{
-		TOPOLOGY_ANN_LEVEL: 2,
-		CORE_ANNS:          2,
-		MEMB_ANNS:          2,
-		ROUTING_TOPICS:     2,
-		FEDERATED_TOPICS:   2,
-		BEACONS:            2,
+		TOPOLOGY_ANN_LEVEL:      2,
+		CORE_ANNS:               2,
+		MEMB_ANNS:               2,
+		MEMB_ACK:                2,
+		ROUTING_TOPICS:          2,
+		SECURE_ROUTING_TOPICS:   2,
+		FEDERATED_TOPICS:        2,
+		SECURE_FEDERATED_TOPICS: 2,
+		BEACONS:                 2,
+		SECURE_BEACONS:          2,
 	}
 
 	// Message handler for consuming messages
 	var messageHandler mqtt.MessageHandler = func(client mqtt.Client, mqttMsg mqtt.Message) {
 		// Deserialize the message
-		msg, err := Deserialize(mqttMsg)
+		msg, err := f.Deserialize(mqttMsg)
 
 		// Get the federated topic
 		federatedTopic := msg.Topic
@@ -62,8 +71,9 @@ func (f *Federator) Run() {
 			if msg.Type == "TopologyAnn" {
 				fmt.Println("Topology ann received: ", msg.TopologyAnn.Neighbor.Id, " Action: ", msg.TopologyAnn.Action)
 
+				// TODO: ATUALIZAR CHAVE DE SESSÃO AQUI Ó
 				if msg.TopologyAnn.Action == "NEW" {
-					mqttClient, err := paho.NewClient(msg.TopologyAnn.Neighbor.Ip, f.Ctx.HostClient.ClientID, msg.TopologyAnn.Neighbor.PublicKey)
+					mqttClient, err := paho.NewClient(msg.TopologyAnn.Neighbor.Ip, f.Ctx.HostClient.ClientID)
 
 					if err == nil {
 						f.Ctx.Neighbors[msg.TopologyAnn.Neighbor.Id] = mqttClient
@@ -116,10 +126,13 @@ func Run(federatorConfig FederatorConfig) {
 		CoreAnnInterval: federatorConfig.CoreAnnInterval,
 		BeaconInterval:  federatorConfig.BeaconInterval,
 		Redundancy:      federatorConfig.Redundancy,
-		PrivateKey:      federatorConfig.PrivateKey,
 		CacheSize:       1000,
 		Neighbors:       neighborsClients,
 		HostClient:      hostClient,
+		// TODO: Check if this is the right way to store the keys
+		PrivateKey: federatorConfig.PrivateKey,
+		PublicKey:  keys.ConvertECDSAPublicKeyToBytes(federatorConfig.PublicKey),
+		SharedKey:  federatorConfig.SharedKey,
 	}
 
 	// Create federator instance and then run it
@@ -137,7 +150,7 @@ func createNeighborsClients(neighbors []NeighborConfig, clientId string) map[int
 	neighborsClients := make(map[int64]*paho.Client)
 
 	for _, neighbor := range neighbors {
-		mqttClient, err := paho.NewClient(neighbor.Ip, clientId, neighbor.PublicKey)
+		mqttClient, err := paho.NewClient(neighbor.Ip, clientId)
 
 		if err == nil {
 			neighborsClients[neighbor.Id] = mqttClient
@@ -160,7 +173,7 @@ func createHostClient(clientId string) *paho.Client {
 		mosquittoPort = "1883"
 	}
 
-	mqttClient, err := paho.NewClient("tcp://localhost:"+mosquittoPort, clientId, "")
+	mqttClient, err := paho.NewClient("tcp://localhost:"+mosquittoPort, clientId)
 
 	if err != nil {
 		panic(err)
