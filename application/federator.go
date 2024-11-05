@@ -23,6 +23,7 @@ type FederatorContext struct {
 	Redundancy      int
 	Neighbors       map[int64]*paho.Client
 	HostClient      *paho.Client
+	TopologyClient  *paho.Client
 	CacheSize       int
 	PrivateKey      *ecdsa.PrivateKey // my private key (can be stored as ecdsa.PrivateKey cuz will not be shared)
 	PublicKey       []byte            // my public key
@@ -55,10 +56,11 @@ func (f *Federator) Run() {
 		SECURE_FEDERATED_TOPICS: 2,
 		BEACONS:                 2,
 		SECURE_BEACONS:          2,
+		NODE_ANN_LEVEL + strconv.FormatInt(f.Ctx.Id, 10): 2,
 	}
 
 	// Message handler for consuming messages
-	var messageHandler mqtt.MessageHandler = func(client mqtt.Client, mqttMsg mqtt.Message) {
+	messageHandler := func(client mqtt.Client, mqttMsg mqtt.Message) {
 		// Deserialize the message
 		msg, err := f.Deserialize(mqttMsg)
 
@@ -71,7 +73,6 @@ func (f *Federator) Run() {
 			if msg.Type == "TopologyAnn" {
 				fmt.Println("Topology ann received: ", msg.TopologyAnn.Neighbor.Id, " Action: ", msg.TopologyAnn.Action)
 
-				// TODO: ATUALIZAR CHAVE DE SESSÃO AQUI Ó
 				if msg.TopologyAnn.Action == "NEW" {
 					mqttClient, err := paho.NewClient(msg.TopologyAnn.Neighbor.Ip, f.Ctx.HostClient.ClientID)
 
@@ -100,6 +101,8 @@ func (f *Federator) Run() {
 		}
 	}
 
+	fmt.Println("Federator", f.Ctx.Id, "started!")
+
 	// Consume messages from the federated network
 	_, err := f.Ctx.HostClient.Consume(topics, messageHandler)
 
@@ -119,6 +122,8 @@ func Run(federatorConfig FederatorConfig) {
 	neighborsClients := createNeighborsClients(federatorConfig.Neighbors, clientId)
 	// Create host client
 	hostClient := createHostClient(clientId)
+	// Create topology client
+	topologyClient := createTopologyClient(clientId)
 
 	// Create federator context
 	ctx := FederatorContext{
@@ -129,10 +134,10 @@ func Run(federatorConfig FederatorConfig) {
 		CacheSize:       1000,
 		Neighbors:       neighborsClients,
 		HostClient:      hostClient,
-		// TODO: Check if this is the right way to store the keys
-		PrivateKey: federatorConfig.PrivateKey,
-		PublicKey:  keys.ConvertECDSAPublicKeyToBytes(federatorConfig.PublicKey),
-		SharedKey:  federatorConfig.SharedKey,
+		TopologyClient:  topologyClient,
+		PrivateKey:      federatorConfig.PrivateKey,
+		PublicKey:       keys.ConvertECDSAPublicKeyToBytes(federatorConfig.PublicKey),
+		SharedKey:       federatorConfig.SharedKey,
 	}
 
 	// Create federator instance and then run it
@@ -176,6 +181,21 @@ func createHostClient(clientId string) *paho.Client {
 	mqttClient, err := paho.NewClient("tcp://localhost:"+mosquittoPort, clientId)
 
 	if err != nil {
+		panic(err)
+	}
+
+	return mqttClient
+}
+
+// createTopologyClient creates a client for the federator
+// that connects to the topology manager
+func createTopologyClient(clientId string) *paho.Client {
+	fmt.Println("Creating topology client as ", clientId)
+
+	mqttClient, err := paho.NewClient("tcp://topology-manager:1883", clientId)
+
+	if err != nil {
+		fmt.Println("Error on creating topology client: ", err)
 		panic(err)
 	}
 

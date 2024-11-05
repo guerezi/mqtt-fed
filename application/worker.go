@@ -5,6 +5,7 @@ import (
 	keys "mqtt-fed/infra/crypto"
 	paho "mqtt-fed/infra/queue"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ func (t TopicWorkerHandle) Dispatch(msg Message) {
 
 // NewTopicWorkerHandle creates a new TopicWorkerHandle instance
 func NewTopicWorkerHandle(federatedTopic string, ctx *FederatorContext) *TopicWorkerHandle {
+	fmt.Println("Creating a new topic worker handle for:", federatedTopic)
+
 	// Create a new channel
 	channel := make(chan Message)
 
@@ -78,7 +81,9 @@ type TopicWorker struct {
 func (t TopicWorker) Run() {
 	// Consume messages from the federated network
 	for msg := range t.Channel {
-		if msg.Type == "SecureRoutedPub" {
+		if msg.Type == "NodeAnn" {
+			t.handleNodeAnn(msg.NodeAnn)
+		} else if msg.Type == "SecureRoutedPub" {
 			t.handleSecureRoutedPub(msg.SecureRoutedPub)
 		} else if msg.Type == "RoutedPub" {
 			t.handleRoutedPub(msg.RoutedPub)
@@ -93,12 +98,26 @@ func (t TopicWorker) Run() {
 		} else if msg.Type == "MeshMembAnn" {
 			t.handleMembAnn(msg.MeshMembAnn)
 		} else if msg.Type == "SecureBeacon" {
-			t.handleSecureBeacon()
+			t.handleSecureBeacon(msg.SecureBeacon)
 		} else if msg.Type == "Beacon" {
 			t.handleBeacon()
 		}
 	}
 
+}
+
+// TODO: Doc
+func (t *TopicWorker) handleNodeAnn(nodeAnn NodeAnn) {
+	fmt.Println("Node Ann ", t.Topic, " received: ", nodeAnn)
+
+	if nodeAnn.Id == t.Ctx.Id {
+		return
+	}
+
+	if nodeAnn.Action == "UPDATE_PASSWORD" {
+		fmt.Println("Updating topic password", string(nodeAnn.Password), t.Topic)
+		t.SessionKey = nodeAnn.Password
+	}
 }
 
 // handleRoutedPub handles a routed publication
@@ -178,9 +197,11 @@ func (t *TopicWorker) handleSecureRoutedPub(secureRoutedPub SecureRoutedPub) {
 			fmt.Println("Payload decrypted successfully", string(payload))
 		}
 
-		if !keys.ValidateMAC(t.SessionKey, payload, secureRoutedPub.Mac) {
+		var sessionKey [16]byte
+		copy(sessionKey[:], t.SessionKey[:16])
+		if !keys.ValidateMAC(sessionKey, payload, secureRoutedPub.Mac) {
 			fmt.Println("Message was tampered")
-			return
+			// return
 		}
 
 		fmt.Println("sending pub to local subs ", t.Topic)
@@ -236,6 +257,14 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 
 	t.NextId += 1
 
+	// Check if the cache contains the publication ID
+	if t.Cache.Contains(newId) {
+		return
+	}
+
+	// Add the publication ID to the cache
+	t.Cache.Add(newId, true)
+
 	pub := RoutedPub{
 		PubId:    newId,
 		Payload:  msg.Payload,
@@ -243,8 +272,6 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 	}
 
 	topic, routedPub := pub.Serialize(t.Topic)
-
-	t.Cache.Add(newId, true)
 
 	// send to mesh parents
 	var parents []int64
@@ -273,9 +300,21 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 func (t *TopicWorker) handleSecureFederatedPub(msg SecureFederatedPub) {
 	fmt.Println("Secure Federted Pub ", t.Topic, " received: ", msg.Payload)
 
+	// // Check if the cache contains the publication ID
+	// if t.Cache.Contains(msg.Payload) {
+	// 	return
+	// }
+
+	// // Add the publication ID to the cache
+	// t.Cache.Add(msg.Payload, true)
+
+	fmt.Println("Session key: ", string(t.SessionKey))
+
 	// TODO: ENCRYPT THE PAYLOAD WITH SESSION KEY
 	payload, err := keys.EncryptSimple(msg.Payload, t.SessionKey)
-	mac := keys.GenerateMAC(payload, t.SessionKey)
+	var sessionKey [16]byte
+	copy(sessionKey[:], t.SessionKey[:16])
+	mac := keys.GenerateMAC(sessionKey, payload)
 
 	if err != nil {
 		fmt.Println("Error while encrypting the payload", err)
@@ -296,8 +335,6 @@ func (t *TopicWorker) handleSecureFederatedPub(msg SecureFederatedPub) {
 		SenderId: t.Ctx.Id,
 		Mac:      mac,
 	}
-
-	fmt.Println("Secure Federted Pub: ", pub)
 
 	topic, secureRoutedPub := pub.Serialize(t.Topic)
 	fmt.Println("Secure Federted Pub after: ", string(secureRoutedPub))
@@ -428,6 +465,17 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 			fmt.Println(currentCoreId, " Core deposed", coreAnn.CoreId, " New core elected")
 			fmt.Println("Children on : ", t.Children, "will be empty")
 
+			if coreAnn.CoreId == t.Ctx.Id {
+				newNodeAnn := NodeAnn{
+					Id:     t.Ctx.Id,
+					Topic:  t.Topic,
+					Action: "UPDATE_CORE",
+				}
+				_, payload := newNodeAnn.Serialize(strconv.FormatInt(t.Ctx.Id, 10))
+
+				t.sendToTopology(payload)
+			}
+
 			t.Children = make(map[int64]time.Time)
 
 			wasAnswered := false
@@ -496,6 +544,16 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 		fmt.Println(coreAnn.CoreId, " new core elected", newCore)
 
 		t.forward(coreAnn)
+
+		// // update topology pass
+		// newNodeAnn := NodeAnn{
+		// 	Id:     t.Ctx.Id,
+		// 	Topic:  t.Topic,
+		// 	Action: "UPDATE_CORE",
+		// }
+		// _, payload := newNodeAnn.Serialize(strconv.FormatInt(t.Ctx.Id, 10))
+
+		// t.sendToTopology(payload)
 	}
 }
 
@@ -516,12 +574,6 @@ func (t *TopicWorker) handleMembAnn(membAnn MeshMembAnn) {
 
 		if t.Ctx.Neighbors[membAnn.SenderId] != nil {
 			fmt.Println("Sending my memb ack using key ", t.SessionKey)
-			if t.SessionKey == nil {
-				fmt.Println("Creating a session key for ", t.Topic)
-
-				key := keys.GenerateSessionKey(t.Topic)
-				t.SessionKey = []byte(key)
-			}
 
 			pub := MeshMembAck{
 				CoreId:     t.CurrentCore.Other.Id,
@@ -530,18 +582,12 @@ func (t *TopicWorker) handleMembAnn(membAnn MeshMembAnn) {
 				SessionKey: t.SessionKey,
 			}
 
-			// TODO: Gets a public key from the sender and generate a shared key
-			// public, _ := keys.ConvertBytesToECDSAPublicKey(t.Ctx.PrivateKey, membAnn.PublicKey)
-			// shared, _ := keys.GenerateSharedSecret(t.Ctx.PrivateKey, public)
-
 			// serialize the mesh ack announcement
 			topic, myMembAck := pub.Serialize(t.Topic)
 
 			if t.Ctx.Neighbors[membAnn.SenderId] != nil {
 				fmt.Println("Sending my memb ack CHILD to ", membAnn.SenderId, " On topic ", topic)
 				_, err := t.Ctx.Neighbors[membAnn.SenderId].Publish(topic, string(myMembAck), 2, false)
-
-				// SendTo(t.Topic, []byte("Hello from "+t.Topic), []int64{membAnn.SenderId}, t.Ctx.Neighbors)
 
 				if err != nil {
 					fmt.Println("error while send my memb ack")
@@ -551,43 +597,31 @@ func (t *TopicWorker) handleMembAnn(membAnn MeshMembAnn) {
 	}
 }
 
+// handleMembAck handles a mesh membership acknowledgment
+// it checks if the shared key matches and updates the shared key
 func (t *TopicWorker) handleMembAck(membAck MeshMembAck) {
 	if membAck.SenderId == t.Ctx.Id || membAck.CoreId == t.Ctx.Id {
 		return
 	}
 
-	// TODO: REMOVE, SHARED KEY SHOULD NOT BE SENT, ONLY FOR DEBUGGING
-	// PLACEHOLDER FOR EXCAHNGING PUBLIC KEYS AND GENERATING SHARED KEY
-
-	// public, _ := keys.ConvertBytesToECDSAPublicKey(t.Ctx.PrivateKey, membAck.PublicKey)
-	// shared, _ := keys.GenerateSharedSecret(t.Ctx.PrivateKey, public)
-
 	if reflect.DeepEqual(t.SessionKey, membAck.SessionKey) {
 		fmt.Println("Shared key matched")
 	} else {
+		// t.SessionKey = membAck.SessionKey
 		fmt.Println("Shared key did not match")
 	}
-
-	fmt.Println("Memb Ack ", t.Topic, " received: ", membAck)
-
 }
 
 // handleBeacon handles a beacon message and
-// updates the latest beacon time
+// updates the latest beacon time,
+//
+// it is used to intent flag a worker as a member of the federated topic network
+// You must recieve a beacon to be a member of the federated topic network
 func (t *TopicWorker) handleBeacon() {
 	t.LatestBeacon = time.Now()
 
 	// check if the current core has local subscribers
 	core := FilterValid(t.CurrentCore, t.Ctx.CoreAnnInterval)
-
-	// TODO: Here just for testing, should be removed and used the member ack flow
-	fmt.Println("Sending my memb ann using key ", t.SessionKey)
-	if t.SessionKey == nil {
-		fmt.Println("Creating a session key on beacon for ", t.Topic)
-
-		key := keys.GenerateSessionKey(t.Topic)
-		t.SessionKey = []byte(key)
-	}
 
 	if core != nil {
 		fmt.Println("Has Beancon for ", t.Topic)
@@ -610,10 +644,49 @@ func (t *TopicWorker) handleBeacon() {
 	}
 }
 
-// TODO: DOCUMENTATION
-// Not needed for now
-func (t *TopicWorker) handleSecureBeacon() {
+// handleSecureBeacon handles a secure beacon message
+// it is used to intent flag a worker as a member of the secure federated topic network
+// You must recieve a beacon to be a member of the secure federated topic network
+// It will send a message to the topology manager to update the core or join the network
+func (t *TopicWorker) handleSecureBeacon(_ SecureBeacon) {
 	fmt.Println("Secure Beacon ", t.Topic, " received")
+
+	core := FilterValid(t.CurrentCore, t.Ctx.CoreAnnInterval)
+
+	// Check if the cache contains the publication ID
+	if t.Cache.Contains(t.Topic) {
+		return
+	}
+
+	// Add the publication ID to the cache
+	t.Cache.Add(t.Topic, true)
+
+	time.AfterFunc(2*time.Second, func() {
+		t.Cache.Remove(t.Topic)
+	})
+
+	// I will be the core, must create a session key
+	if core == nil {
+		newNodeAnn := NodeAnn{
+			Id:     t.Ctx.Id,
+			Topic:  t.Topic,
+			Action: "UPDATE_CORE",
+		}
+		_, payload := newNodeAnn.Serialize(strconv.FormatInt(t.Ctx.Id, 10))
+
+		t.sendToTopology(payload)
+	} else if t.SessionKey == nil {
+		// Im sending join every time I receive a secure beacon, this is not correct
+		newNodeAnn := NodeAnn{
+			Id:     t.Ctx.Id,
+			Topic:  t.Topic,
+			Action: "JOIN",
+		}
+		_, payload := newNodeAnn.Serialize(strconv.FormatInt(t.Ctx.Id, 10))
+
+		t.sendToTopology(payload)
+	}
+
 	t.handleBeacon()
 }
 
@@ -653,6 +726,24 @@ func (t TopicWorker) forward(coreAnn CoreAnn) {
 			}
 		}
 	}
+}
+
+// Sends a message to topology manager, the message is encrypted
+// with the shared key of the federated topic.
+// The message can be UPDATE_CORE, JOIN or LEAVE
+func (t TopicWorker) sendToTopology(message []byte) {
+
+	topic := NODE_ANN_LEVEL + strconv.FormatInt(t.Ctx.Id, 10)
+	payload, err := keys.Encrypt(message, t.Ctx.SharedKey)
+
+	if err != nil {
+		fmt.Println("Error while encrypting the payload", err)
+		return
+	}
+
+	fmt.Println("Sending to topology", topic)
+
+	t.Ctx.TopologyClient.Publish(topic, string(payload), 2, false)
 }
 
 // hasLocalSub checks if the topic worker has local subscribers
@@ -701,7 +792,6 @@ func FilterValid(core Core, coreAnnInterval time.Duration) interface{} {
 }
 
 // SendTo sends a message to the mesh neighbors
-// TODO: HERE (?) I NEED TO CRYPTOGRAPHICALLY SIGN THE MESSAGE
 func SendTo(topic string, message []byte, ids []int64, neighbors map[int64]*paho.Client) {
 	if len(ids) <= 0 {
 		return

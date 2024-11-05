@@ -50,7 +50,6 @@ func getConfig() application.FederatorConfig {
 		payload := bytes.NewBuffer(body)
 
 		fmt.Println("Joining the federated network with body: ", payload)
-		//TODO: A WHITELIST ESTÁ AQUI no topology
 		resp, err := http.Post(os.Getenv("TOPOLOGY_MANAGER_URL")+"/api/v1/join", "application/json", payload)
 
 		if err != nil {
@@ -84,27 +83,8 @@ func getConfig() application.FederatorConfig {
 		federatorConfig.PublicKey = publicKey
 
 		serverKey, _ := keys.ConvertBytesToECDSAPublicKey(privateKey, federatorConfig.ServerPublicKey)
-
 		mySharedKey, _ := keys.GenerateSharedSecret(privateKey, serverKey)
-		fmt.Println("Server SharedKey: ", string(federatorConfig.SharedKey))
-		// TODO: DO NOT SEND THE SHARED KEY IN THE RESPONSE ANYMORE
-		// ITS HERE JUST FOR DEBUGGING
-
-		fmt.Println(string(federatorConfig.SharedKey))
-		fmt.Println(string(mySharedKey))
-		fmt.Println("Mathing KEYS:", keys.CheckKeys(federatorConfig.SharedKey, mySharedKey))
-
-		fmt.Println("Id:", federatorConfig.Id)
-		fmt.Println("Host:", federatorConfig.Host)
-		fmt.Println("Neighbors:", federatorConfig.Neighbors)
-		fmt.Println("Redundancy:", federatorConfig.Redundancy)
-		fmt.Println("CoreAnnInterval:", federatorConfig.CoreAnnInterval)
-		fmt.Println("BeaconInterval:", federatorConfig.BeaconInterval)
-		fmt.Println("ServerPublicKey:", string(federatorConfig.ServerPublicKey))
-		fmt.Println("SharedKey:", string(federatorConfig.SharedKey))
-		fmt.Println("PrivateKey:", federatorConfig.PrivateKey)
-		fmt.Println("PublicKey:", federatorConfig.PublicKey)
-
+		federatorConfig.SharedKey = mySharedKey
 	} else {
 		panic("No configuration provided")
 	}

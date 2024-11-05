@@ -23,7 +23,7 @@ count=1
 until mosquitto_pub -t fed/wait -m wait &> /dev/null; do
     sleep 2
     count=`expr $count + 1`
-    if [ "$count" -eq 120 ]; then
+    if [ "$count" -eq 5 ]; then
         break
     fi
 done

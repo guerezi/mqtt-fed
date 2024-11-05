@@ -12,6 +12,7 @@ import (
 )
 
 const TOPOLOGY_ANN_LEVEL = "federator/topology_ann"
+const NODE_ANN_LEVEL = "federated/node_ann/"
 
 const BEACONS = "federator/beacon/#"
 const SECURE_BEACONS = "federator/beacon/s/#"
@@ -41,6 +42,7 @@ type Message struct {
 	Topic string
 	Type  string
 	TopologyAnn
+	NodeAnn
 	FederatedPub
 	SecureFederatedPub
 	RoutedPub
@@ -55,6 +57,13 @@ type Message struct {
 type TopologyAnn struct {
 	Neighbor NeighborConfig `json:"neighbor"`
 	Action   string         `json:"action"`
+}
+
+type NodeAnn struct {
+	Id       int64  `json:"id"`
+	Topic    string `json:"topic"`
+	Password []byte `json:"password"`
+	Action   string `json:"action"`
 }
 
 type RoutedPub struct {
@@ -129,10 +138,16 @@ func (f *Federator) Deserialize(mqttMessage mqtt.Message) (*Message, error) {
 
 	// Check the topic and unmarshal the payload accordingly
 	// the error is returned if the topic is not recognized
-	if strings.HasPrefix(topic, TOPOLOGY_ANN_LEVEL) {
-		message.Type = "TopologyAnn"
 
-		fmt.Println("Decoding TopologyAnn with key: ", string(f.Ctx.SharedKey))
+	if strings.HasPrefix(topic, NODE_ANN_LEVEL) {
+		message.Type = "NodeAnn"
+		payload, _ := keys.Decrypt(mqttMessage.Payload(), f.Ctx.SharedKey)
+		err = json.Unmarshal(payload, &message.NodeAnn)
+		message.Topic = message.NodeAnn.Topic
+
+		fmt.Println("->", message.Type, "Payload:", message.NodeAnn)
+	} else if strings.HasPrefix(topic, TOPOLOGY_ANN_LEVEL) {
+		message.Type = "TopologyAnn"
 		payload, _ := keys.Decrypt(mqttMessage.Payload(), f.Ctx.SharedKey)
 		err = json.Unmarshal(payload, &message.TopologyAnn)
 
@@ -200,6 +215,14 @@ func (f *Federator) Deserialize(mqttMessage mqtt.Message) (*Message, error) {
 	}
 
 	return &message, nil
+}
+
+func (n *NodeAnn) Serialize(id string) (string, []byte) {
+	topic := NODE_ANN_LEVEL + id
+	payload, _ := json.Marshal(&n)
+
+	fmt.Println("Serialized NodeAnn: ", string(payload))
+	return topic, payload
 }
 
 // Serialize serializes a message to an MQTT message for FederatedPub
