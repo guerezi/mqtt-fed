@@ -111,6 +111,18 @@ func (t TopicWorker) Run() {
 func (t *TopicWorker) handleNodeAnn(nodeAnn NodeAnn) {
 	fmt.Println("Node Ann ", t.Topic, " received: ", nodeAnn)
 
+	// Check if the cache contains the publication ID
+	if t.Cache.Contains(string(nodeAnn.Password)) {
+		return
+	}
+
+	// Add the publication ID to the cache
+	t.Cache.Add(string(nodeAnn.Password), true)
+
+	time.AfterFunc(2*time.Second, func() {
+		t.Cache.Remove(string(nodeAnn.Password))
+	})
+
 	if nodeAnn.Id == t.Ctx.Id {
 		return
 	}
@@ -198,6 +210,7 @@ func (t *TopicWorker) handleSecureRoutedPub(secureRoutedPub SecureRoutedPub) {
 
 		if er != nil {
 			fmt.Println("Error while decrypting the payload", er)
+			return
 		} else {
 			fmt.Println("Payload decrypted successfully", string(payload))
 		}
@@ -680,7 +693,7 @@ func (t *TopicWorker) handleSecureBeacon(_ SecureBeacon) {
 		_, payload := newNodeAnn.Serialize(strconv.FormatInt(t.Ctx.Id, 10))
 
 		t.sendToTopology(payload)
-	} else if t.SessionKey == nil {
+	} else if t.SessionKey == nil || len(t.SessionKey) == 0 {
 		// Im sending join every time I receive a secure beacon, this is not correct
 		newNodeAnn := NodeAnn{
 			Id:     t.Ctx.Id,
