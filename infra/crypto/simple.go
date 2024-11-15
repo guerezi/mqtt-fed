@@ -8,19 +8,9 @@ import (
 	"io"
 )
 
-// TODO: GENERATE COMES ONLY FROM THE TOPOLOGY
-// VER COMO FAZER O CORE GERAR A CHAVE, mAS O TOPOLOGY DISTRIBUIR
-// THE PASSWORD IS THE SAME FOR ALL NODES
-// THE PASSWORD MUST BE PASSED DOWN TO THE NODES
-// WHITELISTE DE TOPICO TAMBËM, por NÓ
-// VER QUAL A DIFICULDADE DE LIDAR COM NÓS INTERMEDIARIOS, SEM CHILD
-
-// COMO ENVIAR MENSAGEM PRO TOPOLOGY MANAGER?
-// CHAVE DE SESSAO NO SIPHASH
-
-// COMO BUSCAR MENSAGENS QUE ESTÃO NO BANCO DO NÓ? QUALIDADE 2
-// CRIPTOGRAFAR O ROUTED PUB?
-
+// DecryptSimple decrypts a message using the provided key
+// It uses the AES block cipher in CFB mode
+// Only used in the topic messages, in symmetric encryption
 func DecryptSimple(ciphertext, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -38,6 +28,9 @@ func DecryptSimple(ciphertext, key []byte) ([]byte, error) {
 	return ciphertext, nil
 }
 
+// EncryptSimple encrypts a message using the provided key
+// It uses the AES block cipher in CFB mode
+// Only used in the topic messages, in symmetric encryption
 func EncryptSimple(plaintext, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

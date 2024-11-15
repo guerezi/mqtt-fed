@@ -51,18 +51,18 @@ services:
       - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
       - ADVERTISED_LISTENER=tcp://mqtt-fed-3:1883
 
-  # mqtt-fed-4:
-  #   image: guerezi/mqtt-fed
-  #   container_name: mqtt-fed-4
-  #   depends_on:
-  #     - mqtt-fed-3
-  #   ports:
-  #     - '1884:1883'
-  #   build:
-  #     context: .
-  #   environment:
-  #     - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
-  #     - ADVERTISED_LISTENER=tcp://mqtt-fed-4:1883
+  mqtt-fed-4:
+    image: guerezi/mqtt-fed
+    container_name: mqtt-fed-4
+    depends_on:
+      - mqtt-fed-3
+    ports:
+      - '1884:1883'
+    build:
+      context: .
+    environment:
+      - TOPOLOGY_MANAGER_URL=http://topology-manager:8080
+      - ADVERTISED_LISTENER=tcp://mqtt-fed-4:1883
 
 networks:
   default:

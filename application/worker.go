@@ -6,7 +6,6 @@ import (
 	paho "mqtt-fed/infra/queue"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru"
@@ -106,7 +105,9 @@ func (t TopicWorker) Run() {
 
 }
 
-// TODO: Doc
+// handleNodeAnn handles a node announcement message
+// it updates the topic password if the action is UPDATE_PASSWORD
+// Any other handler for node <> federator must be done here
 func (t *TopicWorker) handleNodeAnn(nodeAnn NodeAnn) {
 	fmt.Println("Node Ann ", t.Topic, " received: ", nodeAnn)
 
@@ -174,7 +175,10 @@ func (t *TopicWorker) handleRoutedPub(routedPub RoutedPub) {
 	SendTo(topic, replieRoutedPub, children, t.Ctx.Neighbors)
 }
 
-// TODO: DOCUMENTATION
+// handleSecureRoutedPub handles a secure routed publication
+// it decrypts the payload and checks the MAC
+// it creates a new publication ID and sends the publication
+// to the mesh parents and children
 func (t *TopicWorker) handleSecureRoutedPub(secureRoutedPub SecureRoutedPub) {
 	fmt.Println("Secure Routed Pub ", t.Topic, " received: ", string(secureRoutedPub.Payload))
 
@@ -189,6 +193,7 @@ func (t *TopicWorker) handleSecureRoutedPub(secureRoutedPub SecureRoutedPub) {
 	// Check if the topic worker has local subscribers
 	// and send the publication to the local subscribers (sensors and stuff)
 	if t.hasLocalSub() {
+		// It only decrypts the payload if it has local subscribers
 		payload, er := keys.DecryptSimple(secureRoutedPub.Payload, t.SessionKey)
 
 		if er != nil {
@@ -201,7 +206,7 @@ func (t *TopicWorker) handleSecureRoutedPub(secureRoutedPub SecureRoutedPub) {
 		copy(sessionKey[:], t.SessionKey[:16])
 		if !keys.ValidateMAC(sessionKey, payload, secureRoutedPub.Mac) {
 			fmt.Println("Message was tampered")
-			// return
+			return
 		}
 
 		fmt.Println("sending pub to local subs ", t.Topic)
@@ -296,31 +301,29 @@ func (t *TopicWorker) handleFederatedPub(msg FederatedPub) {
 	SendTo(topic, routedPub, children, t.Ctx.Neighbors)
 }
 
-// TODO: DOCUMENTATION
+// handleSecureFederatedPub handles a secure federated publication
+// it encrypts the payload and generates a MAC for the payload
 func (t *TopicWorker) handleSecureFederatedPub(msg SecureFederatedPub) {
 	fmt.Println("Secure Federted Pub ", t.Topic, " received: ", msg.Payload)
 
-	// // Check if the cache contains the publication ID
-	// if t.Cache.Contains(msg.Payload) {
-	// 	return
-	// }
-
-	// // Add the publication ID to the cache
-	// t.Cache.Add(msg.Payload, true)
+	if t.SessionKey == nil {
+		fmt.Println("No session key available")
+		return
+	}
 
 	fmt.Println("Session key: ", string(t.SessionKey))
 
-	// TODO: ENCRYPT THE PAYLOAD WITH SESSION KEY
 	payload, err := keys.EncryptSimple(msg.Payload, t.SessionKey)
-	var sessionKey [16]byte
-	copy(sessionKey[:], t.SessionKey[:16])
-	mac := keys.GenerateMAC(sessionKey, payload)
 
 	if err != nil {
 		fmt.Println("Error while encrypting the payload", err)
 	} else {
 		fmt.Println("Payload encrypted successfully", payload)
 	}
+
+	var sessionKey [16]byte
+	copy(sessionKey[:], t.SessionKey[:16])
+	mac := keys.GenerateMAC(sessionKey, msg.Payload)
 
 	newId := PubId{
 		OriginId: t.Ctx.Id,
@@ -545,15 +548,17 @@ func (t *TopicWorker) handleCoreAnn(coreAnn CoreAnn) {
 
 		t.forward(coreAnn)
 
-		// // update topology pass
-		// newNodeAnn := NodeAnn{
-		// 	Id:     t.Ctx.Id,
-		// 	Topic:  t.Topic,
-		// 	Action: "UPDATE_CORE",
-		// }
-		// _, payload := newNodeAnn.Serialize(strconv.FormatInt(t.Ctx.Id, 10))
+		// if the core ann is from the current core, update the core
+		if coreAnn.CoreId == t.Ctx.Id {
+			newNodeAnn := NodeAnn{
+				Id:     t.Ctx.Id,
+				Topic:  t.Topic,
+				Action: "UPDATE_CORE",
+			}
+			_, payload := newNodeAnn.Serialize(strconv.FormatInt(t.Ctx.Id, 10))
 
-		// t.sendToTopology(payload)
+			t.sendToTopology(payload)
+		}
 	}
 }
 
@@ -809,7 +814,6 @@ func SendTo(topic string, message []byte, ids []int64, neighbors map[int64]*paho
 			fmt.Println("Sending:", topic, "With message:", string(message), "to ", id)
 
 			_, err := neighbors[id].Publish(topic, string(message), 2, false)
-			// _, err := neighbors[id].Publish(topic, keys.Encrypt([]byte(neighbors[id].PublicKey), string(message)), 2, false)
 			if err != nil {
 				fmt.Println("problem creating or queuing the message for broker id ", id)
 			}
@@ -823,7 +827,6 @@ func SendTo(topic string, message []byte, ids []int64, neighbors map[int64]*paho
 		fmt.Println("Sending:", topic, "With message:", string(message), "to ", firstId)
 
 		_, err := neighbors[firstId].Publish(topic, string(message), 2, false)
-		// _, err := neighbors[firstId].Publish(topic, keys.Encrypt([]byte(neighbors[firstId].PublicKey), string(message)), 2, false)
 
 		if err != nil {
 			fmt.Println("problem creating or queuing the message for broker id ", firstId)
@@ -842,13 +845,6 @@ func answerParents(core *CoreBroker, context *FederatorContext, topic string) {
 			CoreId:   core.Id,
 			Seqn:     core.LatestSeqn,
 			SenderId: context.Id,
-		}
-
-		// TODO: SHOULD I SEND THE PUBLIC KEY HERE?
-		// MEMBERANN Sends the public key to the parents (to create a shared key in memb ack)
-		if strings.HasPrefix(topic, SECURE_BEACON_TOPIC_LEVEL) {
-			fmt.Println("Answering parents with secure beacon")
-			pub.PublicKey = context.PublicKey
 		}
 
 		// serialize the mesh membership announcement
@@ -881,13 +877,6 @@ func answer(coreAnn CoreAnn, topic string, context *FederatorContext) {
 		CoreId:   coreAnn.CoreId,
 		Seqn:     coreAnn.Seqn,
 		SenderId: context.Id,
-	}
-
-	// TODO: SHOULD I SEND THE PUBLIC KEY HERE?
-	// MEMBERANN Sends the public key to the parents (to create a shared key in memb ack)
-	if strings.HasPrefix(topic, SECURE_BEACON_TOPIC_LEVEL) {
-		fmt.Println("Answering parents with secure beacon")
-		pub.PublicKey = context.PublicKey
 	}
 
 	// serialize the mesh membership announcement

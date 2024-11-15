@@ -37,6 +37,8 @@ func sipRound(v *[4]uint64) {
 	v[2] = rotateLeft(v[2], 32)
 }
 
+// Generates a Message Authentication Code (MAC) for the given message
+// using the provided key and the SipHash-2-4 algorithm
 func GenerateMAC(key [16]byte, msg []byte) []byte {
 	v := [4]uint64{
 		c0 ^ binary.LittleEndian.Uint64(key[0:8]),
@@ -45,7 +47,7 @@ func GenerateMAC(key [16]byte, msg []byte) []byte {
 		c3 ^ binary.LittleEndian.Uint64(key[8:16]),
 	}
 
-	// Process each 8-byte block of the message
+	// Process the message in 8-byte blocks
 	for len(msg) >= 8 {
 		m := binary.LittleEndian.Uint64(msg[:8])
 		v[3] ^= m
@@ -55,7 +57,7 @@ func GenerateMAC(key [16]byte, msg []byte) []byte {
 		msg = msg[8:]
 	}
 
-	// Process the last block and padding
+	// Process the remaining bytes
 	var lastBlock uint64
 	switch len(msg) {
 	case 7:
@@ -81,28 +83,30 @@ func GenerateMAC(key [16]byte, msg []byte) []byte {
 	}
 	lastBlock |= uint64(len(msg)) << 56
 
+	// Add the last block to the hash
 	v[3] ^= lastBlock
 	sipRound(&v)
 	sipRound(&v)
 	v[0] ^= lastBlock
 
-	// Finalize
+	// Add the finalization block to the hash
 	v[2] ^= 0xff
 	sipRound(&v)
 	sipRound(&v)
 	sipRound(&v)
 	sipRound(&v)
 
-	// Combine the final state into a single uint64
+	// Build the final hash
 	finalHash := v[0] ^ v[1] ^ v[2] ^ v[3]
 
-	// Convert the uint64 hash into a byte slice
+	// Convert the final hash to a byte slice
 	hashBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(hashBytes, finalHash)
 
 	return hashBytes
 }
 
+// ValidateMAC verifies the given message and MAC using the provided key
 func ValidateMAC(key [16]byte, message, expectedMAC []byte) bool {
 	actualMAC := GenerateMAC(key, message)
 

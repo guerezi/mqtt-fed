@@ -88,7 +88,6 @@ type SecureFederatedPub struct {
 	Mac     []byte
 }
 
-// TODO, move public key to this struct?
 type CoreAnn struct {
 	CoreId   int64
 	SenderId int64
@@ -96,7 +95,6 @@ type CoreAnn struct {
 	Dist     int
 }
 
-// TODO, move public key to this struct?
 type MeshMembAnn struct {
 	CoreId    int64
 	SenderId  int64
@@ -109,7 +107,7 @@ type MeshMembAck struct {
 	SenderId   int64
 	Seqn       int
 	PublicKey  []byte // The public key of the sender to be used by the receiver to generate the shared key
-	SessionKey []byte // The shared key just for debugging
+	SessionKey []byte // The shared key just for debugging, it should be removed in a production environment
 }
 
 type PubId struct {
@@ -222,26 +220,6 @@ func (n *NodeAnn) Serialize(id string) (string, []byte) {
 	payload, _ := json.Marshal(&n)
 
 	fmt.Println("Serialized NodeAnn: ", string(payload))
-	return topic, payload
-}
-
-// Serialize serializes a message to an MQTT message for FederatedPub
-// returns the topic and payload
-func (f *FederatedPub) Serialize(fedTopic string) (string, []byte) {
-	topic := CORE_ANN_TOPIC_LEVEL + fedTopic
-	payload, _ := json.Marshal(&f)
-
-	fmt.Println("Serialized FederatedPub: ", string(payload))
-	return topic, payload
-}
-
-// Serialize serializes a message to an MQTT message for SecureFederatedPub
-// returns the topic and payload
-func (f *SecureFederatedPub) Serialize(fedTopic string) (string, []byte) {
-	topic := CORE_ANN_TOPIC_LEVEL + fedTopic // TODO: DO I REALLY SEND AS A CORE ANNOUNCEMENT? WHY
-	payload, _ := json.Marshal(&f)
-
-	fmt.Println("Serialized SecureFederatedPub: ", string(payload))
 	return topic, payload
 }
 

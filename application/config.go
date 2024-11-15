@@ -33,7 +33,7 @@ type FederatorConfig struct {
 	Redundancy      int               `json:"redundancy"`
 	CoreAnnInterval time.Duration     `json:"coreAnnInterval"`
 	BeaconInterval  time.Duration     `json:"beaconInterval"`
-	ServerPublicKey []byte            `json:"publicKey"` // Public key of the topology manager, should be removed
+	ServerPublicKey []byte            `json:"publicKey"` // Public key of the topology manager
 	SharedKey       []byte            `json:"sharedKey"` // Shared key with the topology manager
 	PrivateKey      *ecdsa.PrivateKey // My private Key
 	PublicKey       *ecdsa.PublicKey  // My public Key

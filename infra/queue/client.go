@@ -84,7 +84,6 @@ func (c Client) Publish(topic string, message string, qos byte, retained bool) (
 
 // Disconnect disconnects the client
 // the 10 ms timeout is hardcoded
-// TODO: NOT USED
 func (c Client) Disconnect() {
 	c.client.Disconnect(10)
 }
